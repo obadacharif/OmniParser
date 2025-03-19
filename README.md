@@ -59,6 +59,18 @@ To run gradio demo, simply run:
 python gradio_demo.py
 ```
 
+## Flask API
+OmniParser is also available as a Flask API. To run the Flask server:
+```python
+python flask_api.py
+```
+
+This will start a server on port 5000 with the following endpoints:
+- `/process` - Process an image and return either the processed image or JSON with base64 image
+- `/process_json` - Process an image and return only the parsed content as JSON
+
+For API documentation and examples, visit the root endpoint at http://localhost:5000/
+
 ## Model Weights License
 For the model checkpoints on huggingface model hub, please note that icon_detect model is under AGPL license since it is a license inherited from the original yolo model. And icon_caption_blip2 & icon_caption_florence is under MIT license. Please refer to the LICENSE file in the folder of each model: https://huggingface.co/microsoft/OmniParser.
 
