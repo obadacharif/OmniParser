@@ -3,6 +3,8 @@ import base64
 import io
 import json
 import os
+import logging
+import traceback
 
 import numpy as np
 import torch
@@ -10,6 +12,10 @@ from PIL import Image
 from flask import Flask, request, jsonify, send_file
 
 from util.utils import check_ocr_box, get_yolo_model, get_caption_model_processor, get_som_labeled_img
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize models
 yolo_model = get_yolo_model(model_path='weights/icon_detect/model.pt')
@@ -22,139 +28,185 @@ app = Flask(__name__)
 
 @app.route('/process', methods=['POST'])
 def process():
-    # Get parameters from request
-    box_threshold = float(request.form.get('box_threshold', 0.05))
-    iou_threshold = float(request.form.get('iou_threshold', 0.1))
-    use_paddleocr = request.form.get('use_paddleocr', 'true').lower() == 'true'
-    imgsz = int(request.form.get('imgsz', 640))
-    
-    # Get image from request
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
-    
-    image_file = request.files['image']
-    image_input = Image.open(image_file)
-    
-    # Process image
-    box_overlay_ratio = image_input.size[0] / 3200
-    draw_bbox_config = {
-        'text_scale': 0.8 * box_overlay_ratio,
-        'text_thickness': max(int(2 * box_overlay_ratio), 1),
-        'text_padding': max(int(3 * box_overlay_ratio), 1),
-        'thickness': max(int(3 * box_overlay_ratio), 1),
-    }
+    try:
+        # Get parameters from request
+        box_threshold = float(request.form.get('box_threshold', 0.05))
+        iou_threshold = float(request.form.get('iou_threshold', 0.1))
+        use_paddleocr = request.form.get('use_paddleocr', 'true').lower() == 'true'
+        imgsz = int(request.form.get('imgsz', 640))
+        
+        # Get image from request
+        if 'image' not in request.files:
+            return jsonify({'error': 'No image provided'}), 400
+        
+        image_file = request.files['image']
+        image_input = Image.open(image_file)
+        
+        # Process image
+        box_overlay_ratio = image_input.size[0] / 3200
+        draw_bbox_config = {
+            'text_scale': 0.8 * box_overlay_ratio,
+            'text_thickness': max(int(2 * box_overlay_ratio), 1),
+            'text_padding': max(int(3 * box_overlay_ratio), 1),
+            'thickness': max(int(3 * box_overlay_ratio), 1),
+        }
 
-    ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
-        image_input, 
-        display_img=False, 
-        output_bb_format='xyxy', 
-        goal_filtering=None, 
-        easyocr_args={'paragraph': False, 'text_threshold': 0.9}, 
-        use_paddleocr=use_paddleocr
-    )
-    
-    text, ocr_bbox = ocr_bbox_rslt
-    
-    dino_labled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
-        image_input, 
-        yolo_model, 
-        BOX_TRESHOLD=box_threshold, 
-        output_coord_in_ratio=True, 
-        ocr_bbox=ocr_bbox,
-        draw_bbox_config=draw_bbox_config, 
-        caption_model_processor=caption_model_processor, 
-        ocr_text=text,
-        iou_threshold=iou_threshold, 
-        imgsz=imgsz
-    )
-    
-    # Prepare results
-    image = Image.open(io.BytesIO(base64.b64decode(dino_labled_img)))
-    
-    # Format parsed content
-    formatted_content = {f'icon_{i}': v for i, v in enumerate(parsed_content_list)}
-    
-    # Response format depends on the Accept header
-    if request.headers.get('Accept') == 'application/json':
-        # For API clients: return JSON with image as base64
-        img_buffer = io.BytesIO()
-        image.save(img_buffer, format='PNG')
-        img_buffer.seek(0)
-        img_base64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+        # Try PaddleOCR first, fall back to EasyOCR if it fails
+        try:
+            if use_paddleocr:
+                ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
+                    image_input, 
+                    display_img=False, 
+                    output_bb_format='xyxy', 
+                    goal_filtering=None, 
+                    easyocr_args={'paragraph': False, 'text_threshold': 0.9}, 
+                    use_paddleocr=True
+                )
+                logger.info("PaddleOCR processed successfully")
+            else:
+                raise ValueError("PaddleOCR disabled by user")
+        except Exception as e:
+            logger.warning(f"PaddleOCR failed with error: {str(e)}. Falling back to EasyOCR.")
+            ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
+                image_input, 
+                display_img=False, 
+                output_bb_format='xyxy', 
+                goal_filtering=None, 
+                easyocr_args={'paragraph': False, 'text_threshold': 0.9}, 
+                use_paddleocr=False
+            )
+            logger.info("EasyOCR fallback successful")
         
-        return jsonify({
-            'parsed_content': formatted_content,
-            'image_base64': img_base64
-        })
-    else:
-        # For browser/curl: return the image directly
-        img_buffer = io.BytesIO()
-        image.save(img_buffer, format='PNG')
-        img_buffer.seek(0)
+        text, ocr_bbox = ocr_bbox_rslt
         
-        return send_file(
-            img_buffer,
-            mimetype='image/png',
-            as_attachment=True,
-            download_name='processed_image.png'
+        dino_labled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
+            image_input, 
+            yolo_model, 
+            BOX_TRESHOLD=box_threshold, 
+            output_coord_in_ratio=True, 
+            ocr_bbox=ocr_bbox,
+            draw_bbox_config=draw_bbox_config, 
+            caption_model_processor=caption_model_processor, 
+            ocr_text=text,
+            iou_threshold=iou_threshold, 
+            imgsz=imgsz
         )
+        
+        # Prepare results
+        image = Image.open(io.BytesIO(base64.b64decode(dino_labled_img)))
+        
+        # Format parsed content
+        formatted_content = {f'icon_{i}': v for i, v in enumerate(parsed_content_list)}
+        
+        # Response format depends on the Accept header
+        if request.headers.get('Accept') == 'application/json':
+            # For API clients: return JSON with image as base64
+            img_buffer = io.BytesIO()
+            image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            img_base64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+            
+            return jsonify({
+                'parsed_content': formatted_content,
+                'image_base64': img_base64
+            })
+        else:
+            # For browser/curl: return the image directly
+            img_buffer = io.BytesIO()
+            image.save(img_buffer, format='PNG')
+            img_buffer.seek(0)
+            
+            return send_file(
+                img_buffer,
+                mimetype='image/png',
+                as_attachment=True,
+                download_name='processed_image.png'
+            )
+    except Exception as e:
+        error_msg = f"Error processing request: {str(e)}"
+        error_traceback = traceback.format_exc()
+        logger.error(f"{error_msg}\n{error_traceback}")
+        return jsonify({'error': error_msg, 'traceback': error_traceback}), 500
 
 # Add a separate endpoint to get just the parsed content (JSON)
 @app.route('/process_json', methods=['POST'])
 def process_json():
-    # Get parameters from request
-    box_threshold = float(request.form.get('box_threshold', 0.05))
-    iou_threshold = float(request.form.get('iou_threshold', 0.1))
-    use_paddleocr = request.form.get('use_paddleocr', 'true').lower() == 'true'
-    imgsz = int(request.form.get('imgsz', 640))
-    
-    # Get image from request
-    if 'image' not in request.files:
-        return jsonify({'error': 'No image provided'}), 400
-    
-    image_file = request.files['image']
-    image_input = Image.open(image_file)
-    
-    # Process image (same as in process function)
-    box_overlay_ratio = image_input.size[0] / 3200
-    draw_bbox_config = {
-        'text_scale': 0.8 * box_overlay_ratio,
-        'text_thickness': max(int(2 * box_overlay_ratio), 1),
-        'text_padding': max(int(3 * box_overlay_ratio), 1),
-        'thickness': max(int(3 * box_overlay_ratio), 1),
-    }
+    try:
+        # Get parameters from request
+        box_threshold = float(request.form.get('box_threshold', 0.05))
+        iou_threshold = float(request.form.get('iou_threshold', 0.1))
+        use_paddleocr = request.form.get('use_paddleocr', 'true').lower() == 'true'
+        imgsz = int(request.form.get('imgsz', 640))
+        
+        # Get image from request
+        if 'image' not in request.files:
+            return jsonify({'error': 'No image provided'}), 400
+        
+        image_file = request.files['image']
+        image_input = Image.open(image_file)
+        
+        # Process image (same as in process function)
+        box_overlay_ratio = image_input.size[0] / 3200
+        draw_bbox_config = {
+            'text_scale': 0.8 * box_overlay_ratio,
+            'text_thickness': max(int(2 * box_overlay_ratio), 1),
+            'text_padding': max(int(3 * box_overlay_ratio), 1),
+            'thickness': max(int(3 * box_overlay_ratio), 1),
+        }
 
-    ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
-        image_input, 
-        display_img=False, 
-        output_bb_format='xyxy', 
-        goal_filtering=None, 
-        easyocr_args={'paragraph': False, 'text_threshold': 0.9}, 
-        use_paddleocr=use_paddleocr
-    )
-    
-    text, ocr_bbox = ocr_bbox_rslt
-    
-    dino_labled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
-        image_input, 
-        yolo_model, 
-        BOX_TRESHOLD=box_threshold, 
-        output_coord_in_ratio=True, 
-        ocr_bbox=ocr_bbox,
-        draw_bbox_config=draw_bbox_config, 
-        caption_model_processor=caption_model_processor, 
-        ocr_text=text,
-        iou_threshold=iou_threshold, 
-        imgsz=imgsz
-    )
-    
-    # Format parsed content
-    formatted_content = {f'icon_{i}': v for i, v in enumerate(parsed_content_list)}
-    
-    # Return JSON response
-    return jsonify({
-        'parsed_content': formatted_content
-    })
+        # Try PaddleOCR first, fall back to EasyOCR if it fails
+        try:
+            if use_paddleocr:
+                ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
+                    image_input, 
+                    display_img=False, 
+                    output_bb_format='xyxy', 
+                    goal_filtering=None, 
+                    easyocr_args={'paragraph': False, 'text_threshold': 0.9}, 
+                    use_paddleocr=True
+                )
+                logger.info("PaddleOCR processed successfully")
+            else:
+                raise ValueError("PaddleOCR disabled by user")
+        except Exception as e:
+            logger.warning(f"PaddleOCR failed with error: {str(e)}. Falling back to EasyOCR.")
+            ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
+                image_input, 
+                display_img=False, 
+                output_bb_format='xyxy', 
+                goal_filtering=None, 
+                easyocr_args={'paragraph': False, 'text_threshold': 0.9}, 
+                use_paddleocr=False
+            )
+            logger.info("EasyOCR fallback successful")
+        
+        text, ocr_bbox = ocr_bbox_rslt
+        
+        dino_labled_img, label_coordinates, parsed_content_list = get_som_labeled_img(
+            image_input, 
+            yolo_model, 
+            BOX_TRESHOLD=box_threshold, 
+            output_coord_in_ratio=True, 
+            ocr_bbox=ocr_bbox,
+            draw_bbox_config=draw_bbox_config, 
+            caption_model_processor=caption_model_processor, 
+            ocr_text=text,
+            iou_threshold=iou_threshold, 
+            imgsz=imgsz
+        )
+        
+        # Format parsed content
+        formatted_content = {f'icon_{i}': v for i, v in enumerate(parsed_content_list)}
+        
+        # Return JSON response
+        return jsonify({
+            'parsed_content': formatted_content
+        })
+    except Exception as e:
+        error_msg = f"Error processing request: {str(e)}"
+        error_traceback = traceback.format_exc()
+        logger.error(f"{error_msg}\n{error_traceback}")
+        return jsonify({'error': error_msg, 'traceback': error_traceback}), 500
 
 @app.route('/', methods=['GET'])
 def home():
@@ -207,4 +259,5 @@ def home():
     '''
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False) 
+    port = int(os.environ.get('PORT', 3000))
+    app.run(host='0.0.0.0', port=port, debug=False) 

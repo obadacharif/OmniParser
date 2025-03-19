@@ -26,8 +26,8 @@
 First clone the repo, and then install environment:
 ```python
 cd OmniParser
-conda create -n "omni" python==3.12
-conda activate omni
+python3 -m venv omni
+source omni/bin/activate
 pip install -r requirements.txt
 ```
 
