@@ -6,6 +6,7 @@ import base64
 import pyautogui
 from dataclasses import dataclass
 import uuid
+import time
 
 # Load environment variables from .env file
 load_dotenv()
@@ -31,6 +32,17 @@ from agents import Agent, Runner, function_tool, RunContextWrapper, trace, TResp
 class ParsedScreenshot:  
     parsed_content: str
 
+
+
+def format_icons(data):
+    result = []
+    for key, value in data.items():
+        attributes = {k: v for k, v in value.items() if k != "bbox"}
+        attr_str = ", ".join(f"{k}: {v}" for k, v in attributes.items())
+        result.append(f"{key} | {attr_str}")
+    return "\n".join(result)
+
+
 @function_tool
 def parse_user_screen(wrapper: RunContextWrapper[ParsedScreenshot]) -> str:
     # Omniparser API URL
@@ -44,6 +56,12 @@ def parse_user_screen(wrapper: RunContextWrapper[ParsedScreenshot]) -> str:
         "imgsz": "640"
     }
     
+    
+    print (" ----- parse_user_screen tool ----")
+    if(wrapper.context.parsed_content):
+        print("I've a context !!")
+    else:
+        print("no context yet !")
     # Take a screenshot using pyautogui
     screenshot = pyautogui.screenshot()
     
@@ -64,7 +82,9 @@ def parse_user_screen(wrapper: RunContextWrapper[ParsedScreenshot]) -> str:
         # Save parsed content (optional)
         parsed_content = response_data.get("parsed_content", "")
         
-        print("Parsed Content:", parsed_content)
+        formatted_content = format_icons(parsed_content)
+        
+        print("Parsed Content:", formatted_content)
         
         # Add the latest parsed data to the context
         wrapper.context.parsed_content = parsed_content;
@@ -76,8 +96,7 @@ def parse_user_screen(wrapper: RunContextWrapper[ParsedScreenshot]) -> str:
         else:
             print("No image data found in response.")
         
-        #TODO remove bboxes
-        return parsed_content
+        return formatted_content
     else:
         print(f"Error: {response.status_code}, {response.text}")
         
@@ -94,8 +113,12 @@ async def main():
     agent = Agent[ParsedScreenshot](
         name="UI Agent",
         instructions="""
-        You are a helpful UI parsing agent, parse the screen and guide the user to take the next action, 
-        you should always specify the targeted element
+        You are a helpful UI parsing agent, parse the screen using parse_user_screen tool and guide the user to take the next action, 
+        you should always specify the targeted element from the parsed screen
+        
+        Output Format: 
+        Action:
+        Element:
         """,
         # instructions="you're a helpful assistant"
         tools=[parse_user_screen]
@@ -107,9 +130,13 @@ async def main():
     while True:
         user_input = input("Enter your message: ")
         
+        # Sleep for one second to avoid overwhelming the API
+        time.sleep(1)
         with trace("UI Agent workflow", group_id=conversation_id):  
             input_items.append({"content": user_input, "role": "user"})
-            result = await Runner.run(agent, input=input_items, context=parsed_screenshot)
+            #result = await Runner.run(agent, input=input_items, context=parsed_screenshot)
+            result = await Runner.run(agent, input=user_input, context=parsed_screenshot)
+            
             
             print(result.final_output)
             input_items = result.to_input_list()
