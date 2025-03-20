@@ -31,3 +31,7 @@ uiautomation
 dashscope
 groq
 flask>=2.0.0
+openai-agents
+dotenv
+pyautogui
+dataclasses
