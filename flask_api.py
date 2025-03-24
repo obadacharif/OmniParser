@@ -16,6 +16,7 @@ from util.utils import check_ocr_box, get_yolo_model, get_caption_model_processo
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+print("logging level : " + logging.getLogger().level)  # Should print 20 (INFO) or lower
 
 # Initialize models
 yolo_model = get_yolo_model(model_path='weights/icon_detect/model.pt')
@@ -63,10 +64,12 @@ def process():
                     use_paddleocr=True
                 )
                 logger.info("PaddleOCR processed successfully")
+                print("PaddleOCR processed successfully")
             else:
                 raise ValueError("PaddleOCR disabled by user")
         except Exception as e:
             logger.warning(f"PaddleOCR failed with error: {str(e)}. Falling back to EasyOCR.")
+            print(f"PaddleOCR failed with error: {str(e)}. Falling back to EasyOCR.")
             ocr_bbox_rslt, is_goal_filtered = check_ocr_box(
                 image_input, 
                 display_img=False, 
